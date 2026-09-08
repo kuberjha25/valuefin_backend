@@ -107,16 +107,64 @@ app.use((err, _req, res, _next) => {
 
 /* ---------------- boot ---------------- */
 async function start() {
+  const { execSync, spawnSync } = require('child_process');
+  const migrate = require('./db/migrate');
+
+  async function tryPing(retries = 6, delayMs = 2000) {
+    for (let i = 0; i < retries; i++) {
+      try { await db.ping(); return true; } catch (e) { if (i === retries - 1) throw e; await new Promise((r) => setTimeout(r, delayMs)); }
+    }
+    return false;
+  }
+
   try {
     await db.ping();
   } catch (e) {
     console.error('\n[boot] Cannot reach MySQL at ' + config.db.host + ':' + config.db.port + ' — ' + e.message);
     if (process.platform === 'win32') {
       console.error('[boot] Install MySQL Server for Windows, then start its service (usually:  Start-Service MySQL80)');
+      console.error('[boot] Then create the schema with:  npm run db:migrate\n');
+      process.exit(1);
+    }
+
+    // Try to start MySQL automatically on macOS / Homebrew.
+    if (process.platform === 'darwin') {
+      try {
+        console.log('[boot] Attempting to start MySQL via `brew services start mysql`');
+        spawnSync('brew', ['services', 'start', 'mysql'], { stdio: 'inherit' });
+      } catch (err) {
+        console.warn('[boot] Failed to invoke brew — please start MySQL manually');
+      }
+
+      try {
+        await tryPing(10, 2000);
+      } catch (err) {
+        console.error('[boot] MySQL did not become reachable after attempting to start it: ' + err.message);
+        console.error('[boot] Start it with:  brew services start mysql');
+        console.error('[boot] Then create the schema with:  npm run db:migrate\n');
+        process.exit(1);
+      }
     } else {
       console.error('[boot] Start it with:  brew services start mysql');
+      console.error('[boot] Then create the schema with:  npm run db:migrate\n');
+      process.exit(1);
     }
-    console.error('[boot] Then create the schema with:  npm run db:migrate\n');
+  }
+
+  // At this point the DB is reachable — ensure schema and seeds are applied.
+  try {
+    console.log('[boot] Ensuring database schema and seed data are present');
+    // Call migration entry-points programmatically where possible.
+    await migrate.ensureDatabase();
+    await migrate.applySchema();
+    await migrate.ensureDocumentChecklistColumn();
+    // run seed via the seed module so messages are returned and logged
+    const { seed } = require('./db/seed');
+    const report = await seed();
+    report.forEach((line) => console.log('[seed] ' + line));
+  } catch (err) {
+    console.error('[boot] Failed to apply schema/seed:', err.message);
+    console.error('[boot] You can run: npm run db:migrate');
     process.exit(1);
   }
 
