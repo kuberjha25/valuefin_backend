@@ -67,7 +67,10 @@ app.use(auth.attachUser);
 /* ---------------- health ---------------- */
 app.get('/api/health', H(async () => {
   let database = 'up';
-  try { await db.ping(); } catch (e) { database = 'down: ' + e.message; }
+  try { await db.ping(); } catch (e) {
+    console.error('[health] database ping failed:', e.message);
+    database = config.env === 'production' ? 'down' : 'down: ' + e.message;
+  }
   return { ok: database === 'up', service: 'valuefin-desk', version: require('../package.json').version, database, ts: new Date().toISOString() };
 }));
 app.get('/api/meta', H(async (req) => {
@@ -185,11 +188,11 @@ async function start() {
   await auth.purgeExpiredSessions();
   setInterval(() => auth.purgeExpiredSessions().catch(() => {}), 30 * 60 * 1000).unref();
 
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, config.host, () => {
     console.log('');
     console.log('  Valuefin Desk API');
     console.log('  ─────────────────────────────────────────────');
-    console.log('  listening   http://localhost:' + config.port);
+    console.log('  listening   http://' + config.host + ':' + config.port);
     console.log('  database    ' + config.db.user + '@' + config.db.host + ':' + config.db.port + '/' + config.db.database);
     console.log('  cors origin ' + config.corsOrigin);
     console.log('  environment ' + config.env);

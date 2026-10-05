@@ -83,8 +83,7 @@ function requireDirector(req) {
 }
 
 function clientIp(req) {
-  const fwd = req.headers['x-forwarded-for'];
-  return String((fwd ? String(fwd).split(',')[0] : req.ip) || '').slice(0, 64);
+  return String(req.ip || '').slice(0, 64);   // honours `trust proxy`, not a client-supplied header
 }
 const sqlDate = (d) => new Date(d).toISOString().slice(0, 23).replace('T', ' ');
 

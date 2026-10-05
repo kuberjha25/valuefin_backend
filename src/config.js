@@ -9,6 +9,7 @@ const str = (v, d) => (v == null || v === '' ? d : String(v));
 
 const config = {
   env: str(process.env.NODE_ENV, 'development'),
+  host: str(process.env.HOST, '127.0.0.1'),
   port: int(process.env.PORT, 4001),
   corsOrigin: str(process.env.CORS_ORIGIN, 'http://localhost:3000'),
   db: {

@@ -6,3 +6,6 @@ data/store.json
 .DS_Store
 data/evidence/
 data/tmp/
+.env.*
+!.env.example
+data/

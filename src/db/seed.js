@@ -41,6 +41,7 @@ async function seedUsers() {
 }
 
 async function seedReferenceBorrower() {
+  if (config.env === 'production') return 'borrowers: reference seed skipped in production';
   const [{ n }] = await q('SELECT COUNT(*) AS n FROM borrowers');
   if (n > 0) return 'borrowers: ' + n + ' already present, reference seed skipped';
 
