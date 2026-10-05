@@ -28,9 +28,28 @@ const config = {
   },
   paths: {
     data: path.join(__dirname, '..', 'data'),
-    customers: path.join(__dirname, '..', 'data', 'customers')
+    customers: path.join(__dirname, '..', 'data', 'customers'),
+    // Underwriting originals, content-addressed by SHA-256 and never rewritten.
+    evidence: path.join(__dirname, '..', 'data', 'evidence'),
+    uploadTmp: path.join(__dirname, '..', 'data', 'tmp')
   },
-  uploadMaxBytes: 25 * 1024 * 1024
+  uploadMaxBytes: 25 * 1024 * 1024,
+
+  /* Underwriting ingestion limits (spec §4). Safety limits, not credit policy. */
+  uw: {
+    maxFileBytes: int(process.env.UW_MAX_FILE_MB, 40) * 1024 * 1024,
+    maxBatchFiles: int(process.env.UW_MAX_BATCH_FILES, 20),
+    zipMaxDepth: int(process.env.UW_ZIP_MAX_DEPTH, 2),
+    zipMaxEntries: int(process.env.UW_ZIP_MAX_ENTRIES, 300),
+    zipMaxEntryBytes: int(process.env.UW_ZIP_MAX_ENTRY_MB, 40) * 1024 * 1024,
+    zipMaxTotalBytes: int(process.env.UW_ZIP_MAX_TOTAL_MB, 400) * 1024 * 1024,
+    zipMaxRatio: int(process.env.UW_ZIP_MAX_RATIO, 100),
+    maxPdfPages: int(process.env.UW_MAX_PDF_PAGES, 500),
+    maxSheetCells: int(process.env.UW_MAX_SHEET_CELLS, 200000),
+    // Optional ClamAV command-line scanner. Unset = files are recorded as
+    // "not scanned" rather than silently treated as clean.
+    clamscanPath: str(process.env.UW_CLAMSCAN_PATH, '')
+  }
 };
 
 const missing = [];

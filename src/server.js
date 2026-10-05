@@ -85,6 +85,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/uw', require('./routes/uw'));                 // Phase 1 underwriting
 app.use('/api', reportRoutes);                              // /ledger /mis /portfolio /search /audit
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'No such endpoint: ' + req.method + ' ' + req.path }));
@@ -158,10 +159,14 @@ async function start() {
     await migrate.ensureDatabase();
     await migrate.applySchema();
     await migrate.ensureDocumentChecklistColumn();
+    await migrate.applyUnderwriting();
+    console.log('[boot] ' + await migrate.protectAuditLog());
     // run seed via the seed module so messages are returned and logged
     const { seed } = require('./db/seed');
     const report = await seed();
     report.forEach((line) => console.log('[seed] ' + line));
+    const { seedUnderwriting } = require('./uw/seed');
+    (await seedUnderwriting()).forEach((line) => console.log('[seed] ' + line));
   } catch (err) {
     console.error('[boot] Failed to apply schema/seed:', err.message);
     console.error('[boot] You can run: npm run db:migrate');

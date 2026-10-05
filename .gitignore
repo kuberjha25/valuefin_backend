@@ -4,3 +4,5 @@ data/customers/
 data/store.json
 *.log
 .DS_Store
+data/evidence/
+data/tmp/

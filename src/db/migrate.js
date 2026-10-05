@@ -62,6 +62,39 @@ async function ensureDocumentChecklistColumn() {
   } finally { await conn.end(); }
 }
 
+/* Phase 1 underwriting tables (all CREATE TABLE IF NOT EXISTS). */
+const UW_SCHEMA = path.join(__dirname, 'underwriting.sql');
+async function applyUnderwriting() {
+  const sql = fs.readFileSync(UW_SCHEMA, 'utf8');
+  const conn = await rawConnection(true);
+  try { await conn.query(sql); } finally { await conn.end(); }
+}
+
+/* Make the audit trail append-only at the database level (spec §11). Needs
+   the TRIGGER privilege (and, with binary logging on, SUPER or
+   log_bin_trust_function_creators); without them the app still never
+   modifies audit rows, and a warning says the database-level guard is off. */
+async function protectAuditLog() {
+  const conn = await rawConnection(true);
+  try {
+    const [rows] = await conn.query(
+      `SELECT trigger_name AS t FROM information_schema.triggers
+        WHERE trigger_schema = ? AND event_object_table = 'audit_log'`, [config.db.database]);
+    const have = new Set(rows.map((r) => r.t));
+    const make = [
+      ['audit_log_no_update', 'BEFORE UPDATE'],
+      ['audit_log_no_delete', 'BEFORE DELETE']
+    ];
+    for (const [name, when] of make) {
+      if (have.has(name)) continue;
+      await conn.query('CREATE TRIGGER `' + name + '` ' + when + " ON audit_log FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'audit_log is append-only'");
+    }
+    return 'audit_log: append-only triggers in place';
+  } catch (e) {
+    return 'audit_log: WARNING — could not install append-only triggers (' + e.message + ')';
+  } finally { await conn.end(); }
+}
+
 async function dropAll() {
   const conn = await rawConnection(true);
   try {
@@ -82,10 +115,14 @@ async function main() {
   if (reset) { console.log('[migrate] --reset : dropping every table'); await dropAll(); }
   await applySchema();
   await ensureDocumentChecklistColumn();
+  await applyUnderwriting();
   console.log('[migrate] schema applied');
+  console.log('[migrate] ' + await protectAuditLog());
 
   const report = await seed();
   report.forEach((line) => console.log('[seed] ' + line));
+  const { seedUnderwriting } = require('../uw/seed');
+  (await seedUnderwriting()).forEach((line) => console.log('[seed] ' + line));
 
   console.log('[migrate] done in ' + (Date.now() - t0) + 'ms');
   const { close } = require('./pool');
@@ -96,4 +133,4 @@ if (require.main === module) {
   main().catch((e) => { console.error('[migrate] FAILED:', e.message); process.exit(1); });
 }
 
-module.exports = { ensureDatabase, applySchema, dropAll, ensureDocumentChecklistColumn };
+module.exports = { ensureDatabase, applySchema, dropAll, ensureDocumentChecklistColumn, applyUnderwriting, protectAuditLog };
