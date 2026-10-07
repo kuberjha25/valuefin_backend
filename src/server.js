@@ -29,6 +29,13 @@ const reportRoutes = require('./routes/reports');
 const { router: documentRoutes, uploadHandler, CATEGORIES } = require('./routes/documents');
 const notificationRoutes = require('./routes/notifications');
 const adminRoutes = require('./routes/admin');
+const settingsRoutes = require('./routes/settings');
+const applicationRoutes = require('./routes/applications');
+const disbursementRoutes = require('./routes/disbursements');
+const { enhancements: enhancementRoutes, renewals: renewalRoutes } = require('./routes/credit');
+const { ews: ewsRoutes, visits: visitRoutes, mis: borrowerMisRoutes, drawdownStop } = require('./routes/monitoring');
+const treasuryRoutes = require('./routes/treasury');
+const workflowRoutes = require('./routes/workflow');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -75,7 +82,7 @@ app.get('/api/health', H(async () => {
 }));
 app.get('/api/meta', H(async (req) => {
   auth.requireUser(req);
-  return { documentCategories: CATEGORIES, roles: ['director', 'manager', 'analyst'], uploadMaxBytes: config.uploadMaxBytes };
+  return { documentCategories: CATEGORIES, roles: ['director', 'manager', 'analyst', 'accounts'], uploadMaxBytes: config.uploadMaxBytes };
 }));
 
 /* ---------------- routes ---------------- */
@@ -88,7 +95,18 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/settings', settingsRoutes);
+app.use('/api/applications', applicationRoutes);
+app.use('/api/disbursements', disbursementRoutes);
+app.use('/api/enhancements', enhancementRoutes);
+app.use('/api/renewals', renewalRoutes);
+app.use('/api/ews', ewsRoutes);
+app.use('/api/visits', visitRoutes);
+app.use('/api/borrower-mis', borrowerMisRoutes);
+app.post('/api/borrowers/:id/drawdown-stop', drawdownStop);
 app.use('/api/uw', require('./routes/uw'));                 // Phase 1 underwriting
+app.use('/api', treasuryRoutes);                           // /capital /pnl /risk
+app.use('/api', workflowRoutes);                           // /approvals /nav-badges
 app.use('/api', reportRoutes);                              // /ledger /mis /portfolio /search /audit
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'No such endpoint: ' + req.method + ' ' + req.path }));
@@ -163,6 +181,7 @@ async function start() {
     await migrate.applySchema();
     await migrate.ensureDocumentChecklistColumn();
     await migrate.applyUnderwriting();
+    await migrate.applyLos();
     console.log('[boot] ' + await migrate.protectAuditLog());
     // run seed via the seed module so messages are returned and logged
     const { seed } = require('./db/seed');
@@ -187,6 +206,13 @@ async function start() {
   fs.mkdirSync(config.paths.customers, { recursive: true });
   await auth.purgeExpiredSessions();
   setInterval(() => auth.purgeExpiredSessions().catch(() => {}), 30 * 60 * 1000).unref();
+
+  /* The early-warning rules re-run hourly, so the alerts and the sidebar badge are current
+     even when nobody has opened the screen. Raising is idempotent, so this never stacks duplicates. */
+  const monitor = require('./monitor');
+  const runRules = () => monitor.scan().catch((e) => console.error('[ews] scan failed:', e.message));
+  setTimeout(runRules, 5000).unref();
+  setInterval(runRules, 60 * 60 * 1000).unref();
 
   const server = app.listen(config.port, config.host, () => {
     console.log('');

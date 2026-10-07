@@ -6,6 +6,7 @@ const { q, tx } = require('../db/pool');
 const repo = require('../repo');
 const calc = require('../calc');
 const auth = require('../auth');
+const book = require('../book');
 const audit = require('../audit');
 const { H, bad, notFound, reqStr, optStr, reqNum, optNum, reqDate, optDate, oneOf, reqId, optId, flag } = require('../http');
 
@@ -28,6 +29,27 @@ router.get('/', H(async (req) => {
   return rows.sort((a, c) => (a.bankDebit === c.bankDebit ? c.id - a.id : (a.bankDebit < c.bankDebit ? 1 : -1)));
 }));
 
+/* What closing a drawdown on a chosen date would cost, with the working. */
+router.get('/:id/settlement', H(async (req) => {
+  auth.requireUser(req);
+  const id = reqId(req.params.id, 'Drawdown');
+  const d = await repo.getDrawdown(id);
+  if (!d) throw notFound('Drawdown not found.');
+  if (d.status === 'Repaid') throw bad('This drawdown is already repaid — there is nothing to settle.');
+  const store = await repo.loadEngineStore({ borrowerId: d.borrowerId });
+  const b = store.borrowers[0];
+  const date = optDate(req.query.date, 'Settlement date', calc.td());
+  if (date < d.bankDebit) throw bad('The settlement date cannot precede the debit date (' + d.bankDebit + ').');
+  const mode = oneOf(req.query.mode, 'Advance interest', ['keep', 'refund'], 'keep');
+  const payments = store.payments.filter((p) => p.drawdownId === id);
+  return {
+    settlement: calc.settlement(d, b, payments, date, mode),
+    drawdown: Object.assign(calc.decorateDrawdown(d, b, store.payments, date), { borrowerName: b.name }),
+    borrower: b,
+    payments: payments.sort((a, c) => (a.date === c.date ? a.id - c.id : (a.date < c.date ? -1 : 1)))
+  };
+}));
+
 router.get('/:id', H(async (req) => {
   auth.requireUser(req);
   const id = reqId(req.params.id, 'Drawdown');
@@ -41,19 +63,7 @@ router.get('/:id', H(async (req) => {
   });
 }));
 
-/* Shared guard: a new/enlarged drawdown must fit inside the sanctioned limit. */
-function assertWithinLimit(store, borrowerId, addingAmount, excludeDrawdownId = null) {
-  const limit = calc.currentLimit(store, borrowerId);
-  const open = store.drawdowns
-    .filter((d) => d.borrowerId === borrowerId && d.status !== 'Repaid' && d.id !== excludeDrawdownId)
-    .reduce((s, d) => s + (+d.outPrin || 0), 0);
-  const available = limit - open;
-  if (addingAmount > available + 0.005) {
-    throw bad('This drawdown of ₹' + Math.round(addingAmount).toLocaleString('en-IN') +
-      ' exceeds the available limit of ₹' + Math.round(Math.max(0, available)).toLocaleString('en-IN') +
-      '. Enhance the sanctioned limit first.');
-  }
-}
+const { assertWithinLimit } = require('../ledger');
 
 function readDrawdownInput(body) {
   return {
@@ -76,7 +86,7 @@ router.post('/', H(async (req) => {
   const store = await repo.loadEngineStore({ borrowerId });
   const b = store.borrowers[0];
   if (!b) throw notFound('Borrower not found.');
-  if (b.status === 'closed') throw bad('This facility is closed — reopen it before disbursing.');
+  await book.assertCanDraw(b);
   if (input.bankDebit < b.sanctionDate) throw bad('The debit date cannot precede the sanction date (' + b.sanctionDate + ').');
   assertWithinLimit(store, borrowerId, input.poAmt);
 
@@ -147,6 +157,7 @@ router.post('/:id/rotate', H(async (req) => {
 
   const store = await repo.loadEngineStore({ borrowerId: old.borrowerId });
   const b = store.borrowers[0];
+  await book.assertCanDraw(b);
   const date = optDate(req.body.date, 'Rotation date', calc.td());
   if (date < old.bankDebit) throw bad('The rotation date cannot precede the original debit date.');
 

@@ -95,6 +95,63 @@ async function protectAuditLog() {
   } finally { await conn.end(); }
 }
 
+
+/* Origination, servicing, monitoring and treasury tables (los.sql), plus the
+   columns those features added to tables that already existed. Idempotent. */
+const LOS_SCHEMA = path.join(__dirname, 'los.sql');
+async function applyLos() {
+  const sql = fs.readFileSync(LOS_SCHEMA, 'utf8');
+  const conn = await rawConnection(true);
+  try {
+    await conn.query(sql);
+    await ensureLosColumns(conn);
+  } finally { await conn.end(); }
+}
+
+async function ensureLosColumns(conn) {
+  const db = config.db.database;
+  const col = async (table, column) => {
+    const [rows] = await conn.query(
+      'SELECT COLUMN_TYPE AS t, IS_NULLABLE AS n FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?',
+      [db, table, column]);
+    return rows[0] || null;
+  };
+  const addColumn = async (table, column, ddl) => {
+    if (await col(table, column)) return;
+    await conn.query('ALTER TABLE `' + table + '` ADD COLUMN `' + column + '` ' + ddl);
+  };
+
+  // A fourth staff role: Accounts value-dates approved payouts.
+  const role = await col('users', 'role');
+  if (role && !/accounts/.test(role.t)) {
+    await conn.query("ALTER TABLE users MODIFY role ENUM('director','manager','analyst','accounts') NOT NULL DEFAULT 'analyst'");
+  }
+  const toRole = await col('notifications', 'to_role');
+  if (toRole && !/accounts/.test(toRole.t)) {
+    await conn.query("ALTER TABLE notifications MODIFY to_role ENUM('director','manager','analyst','accounts') NULL");
+  }
+
+  // Borrowers opened from an application carry its product, backing funds and any drawdown stop.
+  await addColumn('borrowers', 'product', 'VARCHAR(24) NULL');
+  await addColumn('borrowers', 'application_id', 'BIGINT UNSIGNED NULL');
+  await addColumn('borrowers', 'vcs', 'JSON NULL');
+  await addColumn('borrowers', 'stop_drawdowns', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await addColumn('borrowers', 'stop_reason', "VARCHAR(500) NOT NULL DEFAULT ''");
+  await addColumn('borrowers', 'stop_by', 'VARCHAR(120) NULL');
+  await addColumn('borrowers', 'stop_at', 'DATETIME(3) NULL');
+
+  // Documents can belong to an application before any borrower exists.
+  const bid = await col('documents', 'borrower_id');
+  if (bid && bid.n === 'NO') await conn.query('ALTER TABLE documents MODIFY borrower_id BIGINT UNSIGNED NULL');
+  if (!(await col('documents', 'application_id'))) {
+    await conn.query('ALTER TABLE documents ADD COLUMN application_id BIGINT UNSIGNED NULL AFTER borrower_id');
+    await conn.query('ALTER TABLE documents ADD KEY ix_doc_app (application_id, id)');
+    await conn.query('ALTER TABLE documents ADD CONSTRAINT fk_doc_app FOREIGN KEY (application_id) REFERENCES credit_applications (id) ON DELETE CASCADE');
+  }
+  await addColumn('documents', 'doc_key', 'VARCHAR(64) NULL');
+  await addColumn('documents', 'analysis', 'LONGTEXT NULL');
+}
+
 async function dropAll() {
   const conn = await rawConnection(true);
   try {
@@ -116,6 +173,7 @@ async function main() {
   await applySchema();
   await ensureDocumentChecklistColumn();
   await applyUnderwriting();
+  await applyLos();
   console.log('[migrate] schema applied');
   console.log('[migrate] ' + await protectAuditLog());
 
@@ -133,4 +191,4 @@ if (require.main === module) {
   main().catch((e) => { console.error('[migrate] FAILED:', e.message); process.exit(1); });
 }
 
-module.exports = { ensureDatabase, applySchema, dropAll, ensureDocumentChecklistColumn, applyUnderwriting, protectAuditLog };
+module.exports = { ensureDatabase, applySchema, dropAll, ensureDocumentChecklistColumn, applyUnderwriting, applyLos, protectAuditLog };

@@ -10,14 +10,14 @@ const audit = require('../audit');
 const { H, bad, notFound, reqStr, reqId, oneOf, flag } = require('../http');
 
 const router = express.Router();
-const ROLES = ['director', 'manager', 'analyst'];
+const ROLES = ['director', 'manager', 'analyst', 'accounts'];
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 router.get('/', H(async (req) => {
   auth.requireUser(req);
   const rows = await q(`
     SELECT u.*, (SELECT COUNT(*) FROM sessions s WHERE s.user_id = u.id AND s.expires_at > NOW(3)) AS live
-      FROM users u ORDER BY FIELD(u.role,'director','manager','analyst'), u.name`);
+      FROM users u ORDER BY FIELD(u.role,'director','manager','analyst','accounts'), u.name`);
   return rows.map((r) => Object.assign(mapUser(r), { liveSessions: +r.live }));
 }));
 

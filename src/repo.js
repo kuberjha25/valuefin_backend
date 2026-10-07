@@ -11,6 +11,13 @@ const { q } = require('./db/pool');
 const num = (v) => (v == null ? 0 : +v);
 const bool = (v) => !!(v === 1 || v === true || v === '1');
 const iso = (v) => (v == null ? null : String(v).replace(' ', 'T'));
+/* mysql2 hands JSON columns back parsed, but a string column (or an older
+   driver) hands back text — accept both. */
+const json = (v, fallback = null) => {
+  if (v == null || v === '') return fallback;
+  if (typeof v === 'string') { try { return JSON.parse(v); } catch (_) { return fallback; } }
+  return v;
+};
 
 /* ---------------- mappers ---------------- */
 const mapUser = (r) => r && ({
@@ -27,6 +34,8 @@ const mapBorrower = (r) => r && ({
   status: r.status, contactName: r.contact_name, contactEmail: r.contact_email,
   contactPhone: r.contact_phone, pan: r.pan, gstin: r.gstin,
   isSample: bool(r.is_sample), createdBy: r.created_by,
+  product: r.product || null, applicationId: r.application_id || null, vcs: json(r.vcs, []) || [],
+  stopDrawdowns: bool(r.stop_drawdowns), stopReason: r.stop_reason || '',
   createdAt: iso(r.created_at), updatedAt: iso(r.updated_at)
 });
 
@@ -51,14 +60,24 @@ const mapLimit = (r) => r && ({
   note: r.note, createdBy: r.created_by, createdAt: iso(r.created_at)
 });
 
-const mapDocument = (r) => r && ({
-  id: r.id, borrowerId: r.borrower_id, borrowerName: r.borrower_name || null,
+/* `analysis` can carry every transaction of a statement, so list views get it
+   without the rows; only the single-document reads ask for them (full). */
+const mapDocument = (r, { full = false } = {}) => r && ({
+  id: r.id, borrowerId: r.borrower_id, applicationId: r.application_id || null, appCode: r.app_code || null,
+  borrowerName: r.borrower_name || null, ownerName: r.borrower_name || null, docKey: r.doc_key || null,
+  analysis: trimAnalysis(json(r.analysis), full),
   title: r.title, filename: r.filename, storedName: r.stored_name, relPath: r.rel_path,
   size: num(r.size_bytes), category: r.category, checklistKey: r.checklist_key || null,
   uploadedById: r.uploaded_by_id, uploadedBy: r.uploaded_by, uploadedAt: iso(r.uploaded_at),
   status: r.status, decidedBy: r.decided_by, decidedAt: iso(r.decided_at), reason: r.reason,
   hasFile: !!r.rel_path
 });
+
+function trimAnalysis(a, full) {
+  if (!a || full) return a;
+  const { transactions, ...rest } = a;
+  return rest;
+}
 
 const mapNotification = (r) => r && ({
   id: r.id, to: r.to_user_id, toRole: r.to_role, type: r.type, message: r.message,
@@ -99,8 +118,24 @@ async function loadEngineStore(opts = {}, run = q) {
 const getBorrower = async (id, run = q) => mapBorrower((await run('SELECT * FROM borrowers WHERE id = ?', [id]))[0]);
 const getDrawdown = async (id, run = q) => mapDrawdown((await run('SELECT * FROM drawdowns WHERE id = ?', [id]))[0]);
 const getPayment = async (id, run = q) => mapPayment((await run('SELECT * FROM payments WHERE id = ?', [id]))[0]);
-const getDocument = async (id, run = q) => mapDocument((await run(
-  'SELECT d.*, b.name AS borrower_name FROM documents d JOIN borrowers b ON b.id = d.borrower_id WHERE d.id = ?', [id]))[0]);
+/* A statement's analysis can run to tens of kilobytes, so list queries never pull
+   it: they select a slim summary built in SQL, and only a single-document read
+   (full) fetches the whole thing. */
+const DOC_COLS = `d.id, d.borrower_id, d.application_id, d.doc_key, d.title, d.filename, d.stored_name, d.rel_path, d.size_bytes,
+   d.category, d.checklist_key, d.uploaded_by_id, d.uploaded_by, d.uploaded_at, d.status, d.decided_by, d.decided_at, d.reason`;
+const DOC_JOINS = `FROM documents d
+   LEFT JOIN borrowers b ON b.id = d.borrower_id
+   LEFT JOIN credit_applications a ON a.id = d.application_id`;
+const DOC_OWNER = 'COALESCE(b.name, a.legal_name) AS borrower_name, a.app_code';
+const DOCUMENT_SELECT = `SELECT ${DOC_COLS},
+   CASE WHEN d.analysis IS NULL THEN NULL ELSE JSON_OBJECT(
+     'kind', JSON_UNQUOTE(JSON_EXTRACT(d.analysis, '$.kind')), 'transactionCount', JSON_EXTRACT(d.analysis, '$.transactionCount'),
+     'source', JSON_UNQUOTE(JSON_EXTRACT(d.analysis, '$.source')), 'at', JSON_UNQUOTE(JSON_EXTRACT(d.analysis, '$.at')),
+     'by', JSON_UNQUOTE(JSON_EXTRACT(d.analysis, '$.by'))) END AS analysis,
+   ${DOC_OWNER} ${DOC_JOINS}`;
+const DOCUMENT_SELECT_FULL = `SELECT d.*, ${DOC_OWNER} ${DOC_JOINS}`;
+const getDocument = async (id, run = q, opts = {}) => mapDocument(
+  (await run((opts.full ? DOCUMENT_SELECT_FULL : DOCUMENT_SELECT) + ' WHERE d.id = ?', [id]))[0], opts);
 const paymentsForDrawdown = async (ddId, run = q) =>
   (await run('SELECT * FROM payments WHERE drawdown_id = ? ORDER BY pay_date, id', [ddId])).map(mapPayment);
 
@@ -134,7 +169,7 @@ async function uniqueSlug(name, run = q) {
 }
 
 module.exports = {
-  mapUser, mapBorrower, mapDrawdown, mapPayment, mapLimit, mapDocument, mapNotification, mapAudit,
+  json, DOCUMENT_SELECT, DOCUMENT_SELECT_FULL, mapUser, mapBorrower, mapDrawdown, mapPayment, mapLimit, mapDocument, mapNotification, mapAudit,
   loadEngineStore, getBorrower, getDrawdown, getPayment, getDocument, paymentsForDrawdown,
   persistReplay, slugify, uniqueSlug
 };

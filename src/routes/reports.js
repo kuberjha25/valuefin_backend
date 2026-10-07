@@ -103,23 +103,28 @@ router.get('/portfolio', H(async (req) => {
 router.get('/search', H(async (req) => {
   auth.requireUser(req);
   const term = String(req.query.q || '').trim();
-  if (term.length < 2) return { borrowers: [], drawdowns: [], documents: [] };
+  if (term.length < 2) return { borrowers: [], drawdowns: [], documents: [], applications: [] };
   const like = '%' + term + '%';
 
-  const [borrowers, drawdowns, documents] = await Promise.all([
+  const [borrowers, drawdowns, documents, applications] = await Promise.all([
     q('SELECT id, name, biz, slug FROM borrowers WHERE name LIKE ? OR biz LIKE ? ORDER BY name LIMIT 8', [like, like]),
     q(`SELECT d.id, d.ref, d.po_amt, d.status, d.borrower_id, b.name AS borrower_name
          FROM drawdowns d JOIN borrowers b ON b.id = d.borrower_id
         WHERE d.ref LIKE ? ORDER BY d.bank_debit DESC LIMIT 8`, [like]),
-    q(`SELECT d.id, d.title, d.status, d.borrower_id, b.name AS borrower_name
-         FROM documents d JOIN borrowers b ON b.id = d.borrower_id
-        WHERE d.title LIKE ? OR d.filename LIKE ? ORDER BY d.id DESC LIMIT 8`, [like, like])
+    q(`SELECT d.id, d.title, d.status, d.borrower_id, COALESCE(b.name, a.legal_name) AS borrower_name
+         FROM documents d LEFT JOIN borrowers b ON b.id = d.borrower_id
+         LEFT JOIN credit_applications a ON a.id = d.application_id
+        WHERE d.title LIKE ? OR d.filename LIKE ? ORDER BY d.id DESC LIMIT 8`, [like, like]),
+    q(`SELECT id, app_code, legal_name, stage, requested_amount FROM credit_applications
+        WHERE legal_name LIKE ? OR app_code LIKE ? OR company_pan LIKE ? OR promoter_name LIKE ?
+        ORDER BY updated_at DESC LIMIT 8`, [like, like, like, like])
   ]);
 
   return {
     borrowers: borrowers.map((r) => ({ id: r.id, name: r.name, biz: r.biz, slug: r.slug })),
     drawdowns: drawdowns.map((r) => ({ id: r.id, ref: r.ref, amount: +r.po_amt, status: r.status, borrowerId: r.borrower_id, borrowerName: r.borrower_name })),
-    documents: documents.map((r) => ({ id: r.id, title: r.title, status: r.status, borrowerId: r.borrower_id, borrowerName: r.borrower_name }))
+    documents: documents.map((r) => ({ id: r.id, title: r.title, status: r.status, borrowerId: r.borrower_id, borrowerName: r.borrower_name })),
+    applications: applications.map((r) => ({ id: r.id, appCode: r.app_code, legalName: r.legal_name, stage: r.stage, amount: +r.requested_amount }))
   };
 }));
 

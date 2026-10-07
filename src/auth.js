@@ -74,6 +74,13 @@ function requireUser(req) {
 function requireWrite(req) {
   const u = requireUser(req);
   if (u.role === 'analyst') throw fail(403, 'The Analyst role is read-only for this action.');
+  if (u.role === 'accounts') throw fail(403, 'The Accounts role can only value-date approved payouts.');
+  return u;
+}
+/* Exact-role guard, for actions that belong to one function (Accounts pays out). */
+function requireRole(req, roles, message) {
+  const u = requireUser(req);
+  if (!roles.includes(u.role)) throw fail(403, message || 'Your role cannot perform this action.');
   return u;
 }
 function requireDirector(req) {
@@ -90,5 +97,5 @@ const sqlDate = (d) => new Date(d).toISOString().slice(0, 23).replace('T', ' ');
 module.exports = {
   COOKIE, cookieOpts, hashPassword, verifyPassword, passwordProblem,
   createSession, destroySession, destroyUserSessions, purgeExpiredSessions,
-  attachUser, requireUser, requireWrite, requireDirector, clientIp, fail, sqlDate
+  attachUser, requireUser, requireWrite, requireRole, requireDirector, clientIp, fail, sqlDate
 };

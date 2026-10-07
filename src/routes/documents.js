@@ -10,6 +10,8 @@ const repo = require('../repo');
 const auth = require('../auth');
 const audit = require('../audit');
 const { notify } = require('../notify');
+const los = require('../los');
+const { analysePdf } = require('../docanalysis');
 const { H, bad, notFound, optStr, reqId, oneOf } = require('../http');
 
 const router = express.Router();
@@ -17,7 +19,7 @@ const docstore = require('../docstore');
 const { CATEGORIES, upload } = docstore;
 const { CHECKLIST_KEYS } = require('../checklist');
 
-const SELECT = `SELECT d.*, b.name AS borrower_name FROM documents d JOIN borrowers b ON b.id = d.borrower_id`;
+const SELECT = repo.DOCUMENT_SELECT;
 
 /* ---------------- list ---------------- */
 router.get('/', H(async (req) => {
@@ -101,6 +103,27 @@ router.get('/:id/file', (req, res, next) => {
   }).catch(next);
 });
 
+/* ---------------- read the document ----------------
+   Pulls the text out of the PDF and, for a bank statement, summarises inflow,
+   balance behaviour and anything that bounced. The result is stored on the
+   document, so it is read once unless a re-read is asked for. */
+router.post('/:id/analyse', H(async (req) => {
+  const me = auth.requireUser(req);
+  const id = reqId(req.params.id, 'Document');
+  const d = await repo.getDocument(id, q, { full: true });
+  if (!d || !d.relPath) throw notFound('Document not found.');
+  if (d.analysis && !(req.query.refresh === '1' || req.query.refresh === 'true')) return d;
+
+  const abs = path.resolve(config.paths.data, d.relPath);
+  if (!abs.startsWith(path.resolve(config.paths.data) + path.sep) || !fs.existsSync(abs)) throw notFound('The file is missing from the server.');
+  const analysis = await analysePdf(fs.readFileSync(abs), me);
+  await q('UPDATE documents SET analysis = ? WHERE id = ?', [JSON.stringify(analysis), id]);
+  await audit.log(req, 'document.analyse', 'document', id,
+    me.name + ' read “' + d.title + '” — ' + (analysis.kind === 'bank_statement' ? analysis.transactionCount + ' transaction(s)' : 'no statement rows recognised'),
+    { kind: analysis.kind, pages: analysis.pages, source: analysis.source });
+  return repo.getDocument(id, q, { full: true });
+}));
+
 /* ---------------- approve / reject ---------------- */
 router.post('/:id/decide', H(async (req) => {
   const me = auth.requireDirector(req);
@@ -129,6 +152,8 @@ router.post('/:id/decide', H(async (req) => {
   }
   await audit.log(req, 'document.' + status, 'document', id,
     me.name + ' ' + status + ' “' + d.title + '” for ' + d.borrowerName, { reason });
+  // A rejected checklist document puts its row back to pending, which can park the application again.
+  if (d.applicationId) await los.refreshStage(d.applicationId);
 
   return repo.getDocument(id);
 }));
@@ -153,6 +178,7 @@ router.delete('/:id', H(async (req) => {
   } catch (e) { console.error('[documents] could not remove file:', e.message); }
 
   await audit.log(req, 'document.delete', 'document', id, me.name + ' deleted “' + d.title + '” (' + d.borrowerName + ')');
+  if (d.applicationId) await los.refreshStage(d.applicationId);
   return { ok: true };
 }));
 

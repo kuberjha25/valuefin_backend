@@ -140,6 +140,47 @@ function replayDrawdown(dd, b, payments) {
   };
 }
 
+/* RBI IRACP bucket from days past tenure. Interest-Only tranches have no
+   amortisation schedule to fall behind, so they stay Standard. */
+function smaBucket(overdueDays) {
+  if (overdueDays <= 0) return 'Standard';
+  if (overdueDays <= 30) return 'SMA-0';
+  if (overdueDays <= 60) return 'SMA-1';
+  if (overdueDays <= 90) return 'SMA-2';
+  return 'NPA';
+}
+const SMA_KEYS = ['Standard', 'SMA-0', 'SMA-1', 'SMA-2', 'NPA'];
+
+/* What it costs to close a drawdown on a chosen date, with the working. `mode`
+   is 'keep' (the advance stays earned) or 'refund' (unused advance days are
+   returned). Recording the closure is an ordinary receipt for `total`. */
+function settlement(dd, b, payments, date, mode) {
+  const refund = mode === 'refund';
+  const days = di(dd.bankDebit, date);
+  const principal = money(+dd.outPrin || 0);
+  const base = { date, days, advanceDays: +dd.ad || 0, loanType: dd.loanType, principal, overdueDays: 0,
+    interestPlain: 0, penal: 0, carriedOverhang: 0, accrued: 0, collected: 0, overpaid: 0,
+    unusedAdvanceDays: null, advanceRefund: 0 };
+
+  if (dd.loanType === 'io') {
+    const accrued = money(ioAccrued(dd, b, date));
+    const collected = money(ioCollected(dd.id, payments || []));
+    const overpaid = money(Math.max(0, collected - accrued));
+    const advanceRefund = refund ? overpaid : 0;
+    return Object.assign(base, { accrued, collected, overpaid, advanceRefund,
+      total: money(Math.max(0, principal + Math.max(0, accrued - collected) - advanceRefund)) });
+  }
+
+  const a = poAccrued(dd, b, date);
+  const unusedAdvanceDays = Math.max(0, (+dd.ad || 0) - days);
+  const advanceRefund = refund ? money((+dd.poAmt || 0) * dr(b.rate) * unusedAdvanceDays) : 0;
+  return Object.assign(base, {
+    overdueDays: a.odD, interestPlain: money(a.exI), penal: money(a.penal), carriedOverhang: money(a.overhang),
+    unusedAdvanceDays, advanceRefund,
+    total: money(Math.max(0, principal + a.exI + a.penal + a.overhang - advanceRefund))
+  });
+}
+
 /* Decorate a drawdown with live accrual for the API/UI. */
 function decorateDrawdown(dd, b, payments, asOf = td()) {
   const acc = dd.loanType === 'io'
@@ -151,7 +192,8 @@ function decorateDrawdown(dd, b, payments, asOf = td()) {
     daysOpen: acc.days,
     overdueDays: repaid ? 0 : (acc.odD || 0),
     dueDate: dueDate(dd, b),
-    dueTotal: repaid ? 0 : money((+dd.outPrin || 0) + acc.total)
+    dueTotal: repaid ? 0 : money((+dd.outPrin || 0) + acc.total),
+    sma: repaid ? 'Closed' : (dd.loanType === 'io' ? 'Standard' : smaBucket(acc.odD || 0))
   });
 }
 
@@ -283,6 +325,7 @@ function borrowerSummary(store, bid, asOf = td()) {
   return {
     borrowerId: bid, name: b.name, slug: b.slug, biz: b.biz, loanType: b.loanType, rate: b.rate,
     tenure: b.tenure, tenureUnit: b.tenureUnit, sanctionDate: b.sanctionDate, isSample: !!b.isSample, asOf,
+    product: b.product || null, vcs: b.vcs || [], stopDrawdowns: !!b.stopDrawdowns, status: b.status,
     limit, baseLimit: money(b.limit), limitIncreases: money(limit - (+b.limit || 0)),
     drawn: money(dds.reduce((s, d) => s + (+d.poAmt || 0), 0)),
     disbursedNet: money(dds.reduce((s, d) => s + (+d.disbursed || 0), 0)),
@@ -371,6 +414,7 @@ function ageing(store, asOf = td()) {
 module.exports = {
   money, dr, td, di, addYearISO, addDaysISO, tenureDays, dueDate, advance, feeCalc, computeDrawdown,
   poAccrued, ioAccrued, ioCollected, ioNetDue, accruedFor, allocatePayment, replayDrawdown, decorateDrawdown,
+  smaBucket, SMA_KEYS, settlement,
   currentLimit, renewalStatus, calcIRR, borrowerCashFlows,
   buildLedger, borrowerSummary, portfolio, monthlySeries, ageing
 };

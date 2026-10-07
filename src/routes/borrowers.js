@@ -47,9 +47,7 @@ router.get('/:id', H(async (req) => {
   const b = store.borrowers[0];
   if (!b) throw notFound('Borrower not found.');
 
-  const docs = await q(
-    `SELECT d.*, b.name AS borrower_name FROM documents d JOIN borrowers b ON b.id = d.borrower_id
-      WHERE d.borrower_id = ? ORDER BY d.id DESC`, [id]);
+  const docs = await q(repo.DOCUMENT_SELECT + ' WHERE d.borrower_id = ? ORDER BY d.id DESC', [id]);
 
   return {
     borrower: b,

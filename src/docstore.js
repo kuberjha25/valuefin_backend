@@ -32,24 +32,29 @@ function assertPdf(file) {
    `run` is either the pool's q() or a transaction's cx.q(). Returns the new
    document id plus the absolute path written, so a caller whose transaction
    later rolls back can remove the orphaned file. */
-async function saveDocument(run, { borrower, file, title, category, checklistKey, user }) {
+async function saveDocument(run, { borrower, application, file, title, category, checklistKey, docKey, user }) {
   assertPdf(file);
 
-  const folder = path.join(config.paths.customers, borrower.slug);
+  /* Before sanction a document belongs to the application and lives in its own
+     folder (the leading underscore keeps it clear of every borrower slug);
+     at sanction the row is re-pointed at the borrower and the file stays put. */
+  const folderName = borrower ? borrower.slug : path.posix.join('_applications', application.appCode);
+  const folder = path.join(config.paths.customers, ...folderName.split('/'));
   fs.mkdirSync(folder, { recursive: true });
 
   const safe = file.originalname.replace(/\.pdf$/i, '').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
   const stored = Date.now() + '-' + (safe || 'document') + '.pdf';
   const abs = path.join(folder, stored);
-  const relPath = path.posix.join('customers', borrower.slug, stored);
+  const relPath = path.posix.join('customers', folderName, stored);
 
   fs.writeFileSync(abs, file.buffer);
   try {
     const r = await run(
-      `INSERT INTO documents (borrower_id, title, filename, stored_name, rel_path, size_bytes, category,
-                              checklist_key, uploaded_by_id, uploaded_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-      [borrower.id, title, file.originalname.slice(0, 255), stored, relPath, file.size, category,
+      `INSERT INTO documents (borrower_id, application_id, doc_key, title, filename, stored_name, rel_path, size_bytes,
+                              category, checklist_key, uploaded_by_id, uploaded_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [borrower ? borrower.id : null, application ? application.id : null, docKey || null, title,
+        file.originalname.slice(0, 255), stored, relPath, file.size, category,
         checklistKey || null, user.id, user.name]);
     return { id: r.insertId, abs, relPath, title, category, checklistKey: checklistKey || null };
   } catch (e) {
